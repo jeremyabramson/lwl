@@ -36,81 +36,115 @@ with tabs[0]:
         if len(players) < 4:
             st.warning("At least 4 players are required.")
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                p1_team1 = st.selectbox("Team 1 Player 1", player_names, key="p1_team1")
-                p2_team1 = st.selectbox("Team 1 Player 2", [p for p in player_names if p != p1_team1], key="p2_team1")
-            with col2:
-                p1_team2 = st.selectbox("Team 2 Player 1", [p for p in player_names if p not in [p1_team1, p2_team1]], key="p1_team2")
-                p2_team2 = st.selectbox("Team 2 Player 2", [p for p in player_names if p not in [p1_team1, p2_team1, p1_team2]], key="p2_team2")
+            teams = session.exec(select(Team)).all()
+            team_options = []
+            for t in teams:
+                p1 = session.get(Player, t.player1_id).name
+                p2 = session.get(Player, t.player2_id).name
+                team_options.append((t.id, f"{p1} & {p2}"))
 
-            score_team1 = st.number_input("Team 1 Score", min_value=0)
-            score_team2 = st.number_input("Team 2 Score", min_value=0)
-            location = st.selectbox("Location", ["Fifth Street Hermosa", "Kahunas Manhattan Beach"])
-            date_played = st.date_input("Date", value=date.today())
-            time_of_day = st.radio("Time", ["Morning", "Afternoon"])
-            notes = st.text_area("Notes")
+            def team_input_block(label, key_prefix, excluded_player_ids=None):
+                if excluded_player_ids is None:
+                    excluded_player_ids = []
 
-            if st.button("Add Match"):
-                # Check or create teams
-                def get_or_create_team(p1, p2):
+                # Filter available teams based on excluded players
+                available_team_options = []
+                for t in teams:
+                    if t.player1_id not in excluded_player_ids and t.player2_id not in excluded_player_ids:
+                        p1 = session.get(Player, t.player1_id).name
+                        p2 = session.get(Player, t.player2_id).name
+                        available_team_options.append((t.id, f"{p1} & {p2}"))
+
+                mode = st.segmented_control(
+                    f"{label} Input Mode",
+                    options=["Existing Team", "Pick Players"],
+                    default="Existing Team",
+                    key=f"{key_prefix}_mode"
+                )
+                if mode == "Existing Team":
+                    if not available_team_options:
+                        st.warning(f"No available teams for {label}.")
+                        return None, []
+                    team_id, team_label = st.selectbox(
+                        f"{label} (Existing)",
+                        options=available_team_options,
+                        format_func=lambda x: x[1],
+                        key=f"{key_prefix}_existing"
+                    )
+                    # Lookup player IDs for exclusion
+                    selected_team = next(t for t in teams if t.id == team_id)
+                    exclude_ids = [selected_team.player1_id, selected_team.player2_id]
+                    return team_id, exclude_ids
+                else:
+                    available_players = [p for p in players if p.id not in excluded_player_ids]
+                    if len(available_players) < 2:
+                        st.warning(f"Not enough available players for {label}.")
+                        return None, []
+                    p1 = st.selectbox(
+                        f"{label} Player 1",
+                        [p.name for p in available_players],
+                        key=f"{key_prefix}_p1"
+                    )
+                    p1_id = next(p.id for p in available_players if p.name == p1)
+
+                    p2 = st.selectbox(
+                        f"{label} Player 2",
+                        [p.name for p in available_players if p.name != p1],
+                        key=f"{key_prefix}_p2"
+                    )
+                    p2_id = next(p.id for p in available_players if p.name == p2)
+
                     team = session.exec(
                         select(Team).where(
-                            ((Team.player1_id == p1.id) & (Team.player2_id == p2.id)) |
-                            ((Team.player1_id == p2.id) & (Team.player2_id == p1.id))
+                            ((Team.player1_id == p1_id) & (Team.player2_id == p2_id)) |
+                            ((Team.player1_id == p2_id) & (Team.player2_id == p1_id))
                         )
                     ).first()
                     if not team:
-                        team = Team(player1_id=p1.id, player2_id=p2.id)
+                        team = Team(player1_id=p1_id, player2_id=p2_id)
                         session.add(team)
                         session.commit()
-                    return team
+                    return team.id, [p1_id, p2_id]
 
-                p_map = {p.name: p for p in players}
-                team1 = get_or_create_team(p_map[p1_team1], p_map[p2_team1])
-                team2 = get_or_create_team(p_map[p1_team2], p_map[p2_team2])
+            col1, col2 = st.columns(2)
+            with col1:
+                team1_id, team1_excludes = team_input_block("Team 1", "team1")
+            with col2:
+                team2_id, team2_excludes = team_input_block("Team 2", "team2", excluded_player_ids=team1_excludes)
 
-                match = Match(
-                    team1_id=team1.id,
-                    team2_id=team2.id,
-                    score_team1=score_team1,
-                    score_team2=score_team2,
-                    location=location,
-                    date=date_played,
-                    time=time_of_day,
-                    notes=notes
-                )
-                session.add(match)
-                session.commit()
-                st.success("Match added successfully!")
+            if team1_id and team2_id:
+                def team_label(team_id):
+                    t = session.get(Team, team_id)
+                    p1 = session.get(Player, t.player1_id).name
+                    p2 = session.get(Player, t.player2_id).name
+                    return f"{p1} & {p2}"
 
-# --- Match Results ---
-with tabs[1]:
-    st.header("Match Results")
-    with get_session() as session:
-        matches = session.exec(select(Match)).all()
-        if matches:
-            df = []
-            for m in matches:
-                team1 = session.get(Team, m.team1_id)
-                team2 = session.get(Team, m.team2_id)
-                p1_team1 = session.get(Player, team1.player1_id).name
-                p2_team1 = session.get(Player, team1.player2_id).name
-                p1_team2 = session.get(Player, team2.player1_id).name
-                p2_team2 = session.get(Player, team2.player2_id).name
-                df.append({
-                    "Date": m.date,
-                    "Time": m.time,
-                    "Team 1": f"{p1_team1} & {p2_team1}",
-                    "Score T1": m.score_team1,
-                    "Team 2": f"{p1_team2} & {p2_team2}",
-                    "Score T2": m.score_team2,
-                    "Location": m.location,
-                    "Notes": m.notes
-                })
-            st.dataframe(pd.DataFrame(df))
-        else:
-            st.info("No matches recorded.")
+                team1_label = team_label(team1_id)
+                team2_label = team_label(team2_id)
+
+                score_team1 = st.number_input(f"{team1_label} score", min_value=0)
+                score_team2 = st.number_input(f"{team2_label} score", min_value=0)
+
+                location = st.selectbox("Location", ["Fifth Street Hermosa", "Kahunas Manhattan Beach"])
+                date_played = st.date_input("Date", value=date.today())
+                time_of_day = st.radio("Time", ["Morning", "Afternoon"])
+                notes = st.text_area("Notes")
+
+                if st.button("Add Match"):
+                    match = Match(
+                        team1_id=team1_id,
+                        team2_id=team2_id,
+                        score_team1=score_team1,
+                        score_team2=score_team2,
+                        location=location,
+                        date=date_played,
+                        time=time_of_day,
+                        notes=notes
+                    )
+                    session.add(match)
+                    session.commit()
+                    st.success("Match added successfully!")
+                    st.experimental_rerun()
 
 # --- Dashboard ---
 with tabs[2]:
