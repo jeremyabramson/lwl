@@ -196,3 +196,83 @@ with tabs[2]:
             st.dataframe(pd.DataFrame(team_records).T)
         else:
             st.info("No match data available.")
+# Match Results Tab
+    with tabs[1]:
+        st.header("Match Results")
+
+        with get_session() as session:
+            # Fetch all matches
+            matches = session.exec(select(Match)).all()
+
+            # If no matches, show a message
+            if not matches:
+                st.info("No matches recorded yet.")
+            else:
+                # Build dataframe
+                records = []
+                for match in matches:
+                    team1 = session.get(Team, match.team1_id)
+                    team2 = session.get(Team, match.team2_id)
+                    team1_p1 = session.get(Player, team1.player1_id).name
+                    team1_p2 = session.get(Player, team1.player2_id).name
+                    team2_p1 = session.get(Player, team2.player1_id).name
+                    team2_p2 = session.get(Player, team2.player2_id).name
+
+                    records.append({
+                        "Date": pd.to_datetime(match.date),
+                        "Time": match.time,
+                        "Location": match.location,
+                        "Team 1": f"{team1_p1} & {team1_p2}",
+                        "Team 1 Player 1": team1_p1,
+                        "Team 1 Player 2": team1_p2,
+                        "Team 2": f"{team2_p1} & {team2_p2}",
+                        "Team 2 Player 1": team2_p1,
+                        "Team 2 Player 2": team2_p2,
+                        "Score Team 1": match.score_team1,
+                        "Score Team 2": match.score_team2,
+                        "Notes": match.notes
+                    })
+
+                df = pd.DataFrame(records)
+
+                # Ensure Date column is datetime
+                df["Date"] = pd.to_datetime(df["Date"])
+
+                # Sidebar filters
+                st.sidebar.header("Filter Matches")
+
+                # Date Range
+                min_date, max_date = df["Date"].min().date(), df["Date"].max().date()
+                date_range = st.sidebar.date_input("Date Range", value=(min_date, max_date))
+
+                # Location Filter
+                location_options = df["Location"].unique().tolist()
+                location_filter = st.sidebar.multiselect("Location", options=location_options, default=location_options, key="ms_match")
+
+                # Player Filter (gather unique player names from all player columns)
+                player_columns = ["Team 1 Player 1", "Team 1 Player 2", "Team 2 Player 1", "Team 2 Player 2"]
+                player_options = sorted(set(df[player_columns].values.flatten()))
+                player_filter = st.sidebar.multiselect("Player", options=player_options)
+
+                # Build masks
+                date_mask = pd.Series([True] * len(df))
+                if date_range and len(date_range) == 2:
+                    start_date, end_date = date_range
+                    date_mask = (df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)
+
+                location_mask = pd.Series([True] * len(df))
+                if location_filter:
+                    location_mask = df["Location"].isin(location_filter)
+
+                player_mask = pd.Series([True] * len(df))
+                if player_filter:
+                    player_mask = df[player_columns].isin(player_filter).any(axis=1)
+
+                # Combine all masks
+                final_mask = date_mask & location_mask & player_mask
+
+                # Filtered dataframe
+                filtered_df = df[final_mask].sort_values(by="Date", ascending=False)
+
+                # Display
+                st.dataframe(filtered_df.reset_index(drop=True))
